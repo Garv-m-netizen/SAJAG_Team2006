@@ -1,4 +1,4 @@
-# Sajag AI (CivicPulse) - Chandigarh Edition
+# Sajag AI - Chandigarh Edition
 ## Connected Civic Intelligence, Preventive Action, Verified Resolution, and Community Participation
 
 A complete, functional civic technology prototype designed for Chandigarh, India.
@@ -332,4 +332,4 @@ The current prototype operates with local deterministic services and synthetic d
 
 ## 10. License and Operational Disclaimer
 
-Sajag AI (CivicPulse) is an open civic technology prototype. All civic incident records, infrastructure vulnerability ratings, and citizen profiles in the demonstration environment are synthetic demonstration records representative of Chandigarh, India.
+Sajag AI is an open civic technology prototype. All civic incident records, infrastructure vulnerability ratings, and citizen profiles in the demonstration environment are synthetic demonstration records representative of Chandigarh, India.
