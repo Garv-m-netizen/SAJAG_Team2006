@@ -1,6 +1,6 @@
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -10,6 +10,7 @@ from app.models import (
 )
 from app.schemas import WorkAssignmentCreate, WorkAssignmentOut, NotificationOut
 from app.auth import get_current_user, require_role
+from app.services.taskvox_caller import taskvox_caller
 
 router = APIRouter(prefix="/admin", tags=["Administration"])
 
@@ -59,12 +60,20 @@ def get_dashboard_statistics(db: Session = Depends(get_db)):
 @router.post("/assign", response_model=WorkAssignmentOut)
 def assign_work_to_field_worker(
     assignment_in: WorkAssignmentCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_role([UserRole.ADMIN])),
     db: Session = Depends(get_db)
 ):
     incident = db.query(Incident).filter(Incident.id == assignment_in.incident_id).first()
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
+
+    active = db.query(WorkAssignment).filter(
+        WorkAssignment.incident_id == incident.id,
+        WorkAssignment.status.in_(["assigned", "in_progress"])
+    ).first()
+    if active:
+        raise HTTPException(status_code=400, detail="This incident already has an active work assignment")
 
     worker = db.query(User).filter(User.id == assignment_in.worker_id, User.role == UserRole.FIELD_WORKER).first()
     if not worker:
@@ -106,6 +115,25 @@ def assign_work_to_field_worker(
     db.add(audit)
     db.commit()
     db.refresh(assignment)
+
+    # Voice-call the worker via TaskVox after the response is sent
+    if taskvox_caller.should_call(worker.full_name):
+        background_tasks.add_task(
+            taskvox_caller.call_worker,
+            worker.phone,
+            {
+                "worker_name": worker.full_name,
+                "incident_number": incident.incident_number,
+                "issue": incident.title,
+                "category": incident.category.value.replace("_", " "),
+                "sector": incident.location.sector,
+                "landmark": incident.location.landmark or "not specified",
+                "priority": assignment_in.priority,
+                "description": incident.description[:300],
+                "instructions": assignment_in.notes or "Standard municipal resolution procedure",
+            },
+            incident.incident_number,
+        )
     return assignment
 
 @router.get("/audit-logs")

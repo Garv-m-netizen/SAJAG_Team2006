@@ -139,11 +139,16 @@ class WorkAssignmentCreate(BaseModel):
     estimated_hours: float = 4.0
     notes: Optional[str] = None
 
+class WorkAssignmentStatusUpdate(BaseModel):
+    status: str
+    notes: Optional[str] = None
+
 class WorkAssignmentOut(BaseModel):
     id: int
     incident_id: int
     worker_id: int
     assigned_by: int
+    worker_name: Optional[str] = None
     priority: str
     estimated_hours: float
     status: str
@@ -191,6 +196,20 @@ class CitizenFeedbackOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+class CitizenFeedbackDetail(CitizenFeedbackOut):
+    user_name: Optional[str] = None
+
+class ReportExtractRequest(BaseModel):
+    text: str
+
+class ReportExtractOut(BaseModel):
+    category: str
+    sector: Optional[str] = None
+    landmark: Optional[str] = None
+    urgency: str = "medium"
+    language: str = "en"
+    provider: str # gemini, groq, openrouter or local (keyword fallback)
 
 class NotificationOut(BaseModel):
     id: int

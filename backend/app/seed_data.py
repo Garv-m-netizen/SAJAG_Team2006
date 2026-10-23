@@ -73,7 +73,7 @@ def seed_database(db: Session, wipe_existing: bool = False):
         full_name="Vikram Singh",
         role=UserRole.FIELD_WORKER,
         sector="Sector 22",
-        phone="+91-98765-43210"
+        phone="+91-9781154002"
     )
     worker2 = User(
         email="worker2@civicpulse.chandigarh.gov.in",

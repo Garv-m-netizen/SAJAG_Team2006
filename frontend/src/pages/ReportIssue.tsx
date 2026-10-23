@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Send,
@@ -12,12 +12,26 @@ import {
   Shield,
   MapPin,
   Clock,
-  ArrowRight
+  ArrowRight,
+  Wand2
 } from 'lucide-react';
 import { api } from '../services/api';
+import { CameraCapture } from '../components/CameraCapture';
 import { LocationPicker } from '../components/map/LocationPicker';
 import { useAuth } from '../context/AuthContext';
 import { IncidentCategory } from '../types';
+import { SECTOR_OPTIONS, resolveLocation } from '../data/chandigarhSectors';
+
+const VOICE_LANGUAGES = [
+  { code: 'en-IN', label: 'English' },
+  { code: 'hi-IN', label: 'हिन्दी' },
+  { code: 'pa-IN', label: 'ਪੰਜਾਬੀ' },
+];
+
+const MAX_PHOTOS = 5;
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+
+const joinText =(a: string, b: string) => [a.trim(), b.trim()].filter(Boolean).join(' ');
 
 export const ReportIssue: React.FC = () => {
   const { user } = useAuth();
@@ -33,6 +47,215 @@ export const ReportIssue: React.FC = () => {
   const [selectedLanguage, setSelectedLanguage] = useState('en');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submittedIncident, setSubmittedIncident] = useState<any>(null);
+
+  // Voice recording
+  const [isRecording, setIsRecording] = useState(false);
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string>('');
+  const [recordSeconds, setRecordSeconds] = useState(0);
+  const [micError, setMicError] = useState('');
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<number | null>(null);
+
+  // Photo evidence
+  const [photos, setPhotos] = useState<{ file: File; url: string }[]>([]);
+  const [photoError, setPhotoError] = useState('');
+  const photosRef = useRef(photos);
+  photosRef.current = photos;
+
+  const addPhotos = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = '';
+    addPhotoFiles(picked);
+  };
+
+  const addPhotoFiles = (picked: File[]) => {
+    setPhotoError('');
+    const accepted: { file: File; url: string }[] = [];
+    for (const file of picked) {
+      if (!/\.(jpe?g|png|webp)$/i.test(file.name)) {
+        setPhotoError(`"${file.name}" is not a JPG, PNG or WebP image.`);
+        continue;
+      }
+      if (file.size > MAX_PHOTO_BYTES) {
+        setPhotoError(`"${file.name}" is larger than 10 MB.`);
+        continue;
+      }
+      accepted.push({ file, url: URL.createObjectURL(file) });
+    }
+    setPhotos((prev) => {
+      const room = MAX_PHOTOS - prev.length;
+      if (accepted.length > room) setPhotoError(`You can attach up to ${MAX_PHOTOS} photos.`);
+      accepted.slice(room).forEach((p) => URL.revokeObjectURL(p.url));
+      return [...prev, ...accepted.slice(0, room)];
+    });
+  };
+
+  const removePhoto = (index: number) => {
+    setPhotos((prev) => {
+      URL.revokeObjectURL(prev[index].url);
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  // Live speech-to-text + LLM field extraction
+  const [voiceLang, setVoiceLang] = useState('en-IN');
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractNote, setExtractNote] = useState('');
+  const recognitionRef = useRef<any>(null);
+  const recordingRef = useRef(false);
+  const baseTextRef = useRef('');
+
+  const sectorOptions = SECTOR_OPTIONS.some((o) => o.value === sector)
+    ? SECTOR_OPTIONS
+    : [...SECTOR_OPTIONS, { value: sector, label: sector }];
+
+  // Fills category / sector / landmark from text (Gemini -> Groq -> OpenRouter on the server) and moves the map pin.
+  const runExtraction = async (text: string) => {
+    if (!text.trim()) return;
+    setIsExtracting(true);
+    setExtractNote('');
+    try {
+      const res = await api.extractReport(text);
+      if (res.category) setCategory(res.category);
+      if (res.language) setSelectedLanguage(res.language);
+      if (res.sector) setSector(res.sector);
+      if (res.landmark) setLandmark(res.landmark);
+
+      let pinned = false;
+      if (res.sector) {
+        const coords = await resolveLocation(res.sector, res.landmark);
+        if (coords) {
+          setLatitude(coords.lat);
+          setLongitude(coords.lon);
+          setIsGps(false);
+          pinned = true;
+        }
+      }
+      const found = [
+        `category: ${res.category.replace(/_/g, ' ')}`,
+        res.sector ? `${res.sector}${pinned ? ' (pin placed)' : ''}` : null,
+        res.landmark ? `landmark: ${res.landmark}` : null,
+      ].filter(Boolean).join(' • ');
+      setExtractNote(
+        res.provider === 'local'
+          ? `No LLM API key is configured or all providers failed — used built-in keyword extraction. ${found}`
+          : `Auto-filled by ${res.provider}: ${found}`
+      );
+    } catch (err: any) {
+      setExtractNote('Auto-fill failed: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
+  const startRecognition = () => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+    const rec = new SR();
+    rec.lang = voiceLang;
+    rec.continuous = true;
+    rec.interimResults = true;
+    let finalText = '';
+
+    rec.onresult = (ev: any) => {
+      let interim = '';
+      finalText = '';
+      for (let i = 0; i < ev.results.length; i++) {
+        const r = ev.results[i];
+        if (r.isFinal) finalText += r[0].transcript;
+        else interim += r[0].transcript;
+      }
+      setDescription(joinText(baseTextRef.current, finalText + ' ' + interim));
+    };
+    rec.onerror = (ev: any) => {
+      if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+        recordingRef.current = false;
+        setMicError('Speech recognition was blocked by the browser.');
+      }
+    };
+    rec.onend = () => {
+      baseTextRef.current = joinText(baseTextRef.current, finalText);
+      setDescription(baseTextRef.current);
+      if (recordingRef.current) {
+        startRecognition(); // the browser ends a session after silence; keep listening
+      } else {
+        runExtraction(baseTextRef.current);
+      }
+    };
+    recognitionRef.current = rec;
+    try {
+      rec.start();
+    } catch {
+      /* already started */
+    }
+  };
+
+  const stopTimer = () => {
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const startRecording = async () => {
+    setMicError('');
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setMicError('Voice recording is not supported in this browser.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      chunksRef.current = [];
+      recorder.ondataavailable = (ev) => {
+        if (ev.data.size > 0) chunksRef.current.push(ev.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        setAudioBlob(blob);
+        setAudioUrl((old) => {
+          if (old) URL.revokeObjectURL(old);
+          return URL.createObjectURL(blob);
+        });
+      };
+      recorderRef.current = recorder;
+      recorder.start();
+      recordingRef.current = true;
+      baseTextRef.current = description;
+      startRecognition();
+      setRecordSeconds(0);
+      setIsRecording(true);
+      timerRef.current = window.setInterval(() => setRecordSeconds((s) => s + 1), 1000);
+    } catch {
+      setMicError('Microphone access was denied or unavailable.');
+    }
+  };
+
+  const stopRecording = () => {
+    stopTimer();
+    recordingRef.current = false;
+    recorderRef.current?.stop();
+    if (recognitionRef.current) recognitionRef.current.stop(); // its onend runs the extraction
+    setIsRecording(false);
+  };
+
+  const discardRecording = () => {
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+    setAudioUrl('');
+    setAudioBlob(null);
+    setRecordSeconds(0);
+  };
+
+  useEffect(() => () => {
+    stopTimer();
+    recordingRef.current = false;
+    if (recognitionRef.current) recognitionRef.current.abort();
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') recorderRef.current.stop();
+    photosRef.current.forEach((p) => URL.revokeObjectURL(p.url));
+  }, []);
 
   // Deterministic local extraction preview
   const [aiPreview, setAiPreview] = useState<any>(null);
@@ -88,12 +311,14 @@ export const ReportIssue: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!description.trim()) return;
+    if (!description.trim() && !audioBlob && photos.length === 0) return;
 
     setIsSubmitting(true);
     try {
       const payload = {
-        description,
+        description: description.trim() || (audioBlob
+          ? 'Voice report submitted by citizen (audio recording attached).'
+          : 'Photo report submitted by citizen (photo evidence attached).'),
         category,
         language: aiPreview?.language || selectedLanguage,
         sector,
@@ -105,6 +330,36 @@ export const ReportIssue: React.FC = () => {
       };
 
       const result = await api.submitReport(payload);
+      if (audioBlob) {
+        try {
+          const ext = audioBlob.type.includes('mp4') ? 'm4a' : audioBlob.type.includes('wav') ? 'wav' : 'webm';
+          const form = new FormData();
+          form.append('file', audioBlob, `voice-report.${ext}`);
+          form.append('caption', 'Citizen voice recording');
+          await api.uploadEvidence(result.id, form);
+        } catch (uploadErr: any) {
+          alert("Report lodged, but the voice recording failed to upload: " + (uploadErr.response?.data?.detail || uploadErr.message));
+        }
+        discardRecording();
+      }
+      if (photos.length > 0) {
+        const failed: string[] = [];
+        for (const p of photos) {
+          try {
+            const form = new FormData();
+            form.append('file', p.file, p.file.name);
+            form.append('caption', 'Citizen photo evidence');
+            await api.uploadEvidence(result.id, form);
+          } catch (uploadErr: any) {
+            failed.push(`${p.file.name}: ${uploadErr.response?.data?.detail || uploadErr.message}`);
+          }
+        }
+        if (failed.length > 0) {
+          alert("Report lodged, but some photos failed to upload:\n" + failed.join('\n'));
+        }
+        photos.forEach((p) => URL.revokeObjectURL(p.url));
+        setPhotos([]);
+      }
       setSubmittedIncident(result);
     } catch (err: any) {
       console.error(err);
@@ -247,10 +502,123 @@ export const ReportIssue: React.FC = () => {
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 rows={4}
-                required
+                required={!audioBlob && photos.length === 0}
                 placeholder="Write in Hindi, Punjabi, or English. E.g., 'Aroma hotel ke paas naali jam hai' or 'Sector 35 road has deep pothole'..."
                 className="w-full text-xs p-3 rounded-md border border-[#E5E7EB] focus:ring-1 focus:ring-[#0F766E] focus:border-[#0F766E] outline-none text-[#1A1D20]"
               />
+            </div>
+
+            {/* Photo Evidence */}
+            <div className="bg-[#F8F9FA] p-3 rounded-md border border-[#E5E7EB] space-y-2">
+              <span className="text-xs font-semibold text-[#374151] flex items-center gap-1.5">
+                <Camera className="w-3.5 h-3.5 text-[#0F766E]" />
+                Attach Photos of the Issue (up to {MAX_PHOTOS}, +5 points)
+              </span>
+              <div className="flex flex-wrap gap-2">
+              <CameraCapture
+                label="Capture with Camera"
+                disabled={photos.length >= MAX_PHOTOS}
+                onCapture={(f) => addPhotoFiles([f])}
+              />
+              <label
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-white border border-[#E5E7EB] text-[#374151] ${
+                  photos.length >= MAX_PHOTOS ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-teal-500'
+                }`}
+              >
+                <Upload className="w-3.5 h-3.5" />
+                {photos.length > 0 ? 'Add More Photos' : 'Upload from Device'}
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  multiple
+                  disabled={photos.length >= MAX_PHOTOS}
+                  onChange={addPhotos}
+                  className="hidden"
+                />
+              </label>
+              </div>
+              {photos.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {photos.map((p, i) => (
+                    <div key={p.url} className="relative w-20 h-20">
+                      <img src={p.url} alt={`Issue photo ${i + 1}`} className="w-full h-full object-cover rounded-md border border-[#E5E7EB]" />
+                      <button
+                        type="button"
+                        onClick={() => removePhoto(i)}
+                        aria-label={`Remove photo ${i + 1}`}
+                        className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-600 text-white text-xs leading-none flex items-center justify-center"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {photoError && <p className="text-[11px] text-red-700">{photoError}</p>}
+            </div>
+
+            {/* Voice Recording */}
+            <div className="bg-[#F8F9FA] p-3 rounded-md border border-[#E5E7EB] space-y-2">
+              <span className="text-xs font-semibold text-[#374151] flex items-center gap-1.5">
+                <Mic className="w-3.5 h-3.5 text-[#0F766E]" />
+                Or Record a Voice Report (speech is transcribed above)
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={voiceLang}
+                  onChange={(e) => setVoiceLang(e.target.value)}
+                  disabled={isRecording}
+                  title="Spoken language"
+                  className="text-xs p-1.5 rounded-md border border-[#E5E7EB] bg-white outline-none"
+                >
+                  {VOICE_LANGUAGES.map((l) => (
+                    <option key={l.code} value={l.code}>{l.label}</option>
+                  ))}
+                </select>
+                {isRecording ? (
+                  <button
+                    type="button"
+                    onClick={stopRecording}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-red-600 hover:bg-red-700 text-white flex items-center gap-1.5"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                    Stop ({recordSeconds}s)
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={startRecording}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-white border border-[#E5E7EB] hover:border-teal-500 text-[#374151] flex items-center gap-1.5"
+                  >
+                    <Mic className="w-3.5 h-3.5" />
+                    {audioBlob ? 'Re-record' : 'Start Recording'}
+                  </button>
+                )}
+                {audioBlob && !isRecording && (
+                  <button
+                    type="button"
+                    onClick={discardRecording}
+                    className="px-3 py-1.5 text-xs rounded-md text-red-700 hover:bg-red-50"
+                  >
+                    Discard
+                  </button>
+                )}
+              </div>
+              {audioUrl && !isRecording && <audio controls src={audioUrl} className="w-full h-9" />}
+              {micError && <p className="text-[11px] text-red-700">{micError}</p>}
+              {isRecording && <p className="text-[11px] text-teal-800">Listening… your words appear in the description box.</p>}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => runExtraction(description)}
+                  disabled={isExtracting || isRecording || !description.trim()}
+                  className="px-3 py-1.5 text-xs font-medium rounded-md bg-[#0F766E] hover:bg-[#0D9488] disabled:bg-gray-300 text-white flex items-center gap-1.5"
+                >
+                  <Wand2 className="w-3.5 h-3.5" />
+                  {isExtracting ? 'Reading your report…' : 'Auto-fill category, sector & map pin'}
+                </button>
+                {extractNote && <span className="text-[11px] text-teal-900">{extractNote}</span>}
+              </div>
             </div>
 
             {/* Category and Sector Fields */}
@@ -284,14 +652,9 @@ export const ReportIssue: React.FC = () => {
                   onChange={(e) => setSector(e.target.value)}
                   className="w-full text-xs p-2 rounded-md border border-[#E5E7EB] bg-white focus:ring-1 focus:ring-[#0F766E] outline-none"
                 >
-                  <option value="Sector 17">Sector 17 (City Center / Plaza)</option>
-                  <option value="Sector 22">Sector 22 (Aroma / Mobile Market)</option>
-                  <option value="Sector 26">Sector 26 (Grain Market / Madhya Marg)</option>
-                  <option value="Sector 35">Sector 35 (Kisan Bhawan / Commercial)</option>
-                  <option value="Sector 43">Sector 43 (ISBT / District Court)</option>
-                  <option value="Sector 45">Sector 45 (Residential / Burail)</option>
-                  <option value="Manimajra">Manimajra (Housing Complex)</option>
-                  <option value="Industrial Area Phase 1">Industrial Area Phase 1 (Tribune Chowk)</option>
+                  {sectorOptions.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -331,7 +694,7 @@ export const ReportIssue: React.FC = () => {
             <div className="pt-2">
               <button
                 type="submit"
-                disabled={isSubmitting || !description.trim()}
+                disabled={isSubmitting || isRecording || (!description.trim() && !audioBlob && photos.length === 0)}
                 className="w-full py-2.5 px-4 bg-[#0F766E] hover:bg-[#0D9488] disabled:bg-gray-300 text-white font-medium text-xs rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors"
               >
                 <Send className="w-4 h-4" />

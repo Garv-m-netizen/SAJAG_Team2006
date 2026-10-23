@@ -3,10 +3,18 @@ import {
   Incident, GraphData, RiskAssessment,
   InterventionPlan, CivicEquityOverview, LeaderboardEntry,
   BadgeItem, WorkAssignment, ResolutionSubmission,
-  NotificationItem, User
+  NotificationItem, User, CitizenFeedback, ReportExtraction
 } from '../types';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_URL
+  || `${window.location.protocol}//${window.location.hostname}:8000/api/v1`;
+
+// Resolves backend-relative upload paths (/uploads/...) to absolute URLs; leaves external URLs untouched.
+export const mediaUrl = (path?: string): string => {
+  if (!path) return '';
+  if (/^(https?:|data:|blob:)/i.test(path)) return path;
+  return API_BASE_URL.replace(/\/api\/v1\/?$/, '') + path;
+};
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -22,6 +30,20 @@ apiClient.interceptors.request.use((config) => {
   }
   return config;
 });
+
+// A rejected token (expired, or the server's SECRET_KEY changed) can't recover on its own:
+// drop it and reload so the app signs in again instead of failing every request.
+apiClient.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    const url: string = err.config?.url || '';
+    if (err.response?.status === 401 && !url.includes('/auth/login') && localStorage.getItem('civicpulse_token')) {
+      localStorage.removeItem('civicpulse_token');
+      window.location.reload();
+    }
+    return Promise.reject(err);
+  }
+);
 
 export const api = {
   // Auth
@@ -53,6 +75,10 @@ export const api = {
   },
   submitReport: async (data: any): Promise<Incident> => {
     const res = await apiClient.post('/incidents/report', data);
+    return res.data;
+  },
+  extractReport: async (text: string): Promise<ReportExtraction> => {
+    const res = await apiClient.post('/incidents/extract', { text });
     return res.data;
   },
   uploadEvidence: async (incidentId: number, formData: FormData) => {
@@ -105,6 +131,18 @@ export const api = {
     const res = await apiClient.get('/resolution/assignments', { params: { status } });
     return res.data;
   },
+  updateAssignmentStatus: async (assignmentId: number, data: { status: string; notes?: string }): Promise<WorkAssignment> => {
+    const res = await apiClient.patch(`/resolution/assignments/${assignmentId}/status`, data);
+    return res.data;
+  },
+  uploadResolutionPhoto: async (file: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await apiClient.post('/resolution/upload-photo', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    return res.data.path;
+  },
   submitResolution: async (data: any): Promise<ResolutionSubmission> => {
     const res = await apiClient.post('/resolution/submit', data);
     return res.data;
@@ -115,6 +153,14 @@ export const api = {
     comments?: string;
   }) => {
     const res = await apiClient.post('/resolution/feedback', data);
+    return res.data;
+  },
+  getIncidentFeedback: async (incidentId: number): Promise<CitizenFeedback[]> => {
+    const res = await apiClient.get(`/resolution/feedback/${incidentId}`);
+    return res.data;
+  },
+  getMyReverifiedIds: async (): Promise<number[]> => {
+    const res = await apiClient.get('/resolution/my-feedback');
     return res.data;
   },
   getSubmissions: async (incidentId: number): Promise<ResolutionSubmission[]> => {

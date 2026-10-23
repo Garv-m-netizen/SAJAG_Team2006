@@ -77,6 +77,11 @@ export const LocationPicker: React.FC<LocationPickerProps> = ({
   useEffect(() => {
     if (mapInstanceRef.current && markerRef.current) {
       markerRef.current.setLatLng([latitude, longitude]);
+      // Bring the pin into view when it was moved programmatically (e.g. voice auto-fill)
+      const map = mapInstanceRef.current;
+      if (!map.getBounds().pad(-0.2).contains([latitude, longitude])) {
+        map.setView([latitude, longitude], Math.max(map.getZoom(), 14));
+      }
     }
   }, [latitude, longitude]);
 

@@ -15,13 +15,25 @@ import {
   Network
 } from 'lucide-react';
 import { api } from '../services/api';
+import { IncidentEvidenceGallery } from '../components/IncidentEvidenceGallery';
 import { Incident } from '../types';
 import { IncidentMap } from '../components/map/IncidentMap';
 import { useAuth } from '../context/AuthContext';
+import { CitizenDashboard } from './CitizenDashboard';
+import { FieldWorkerDashboard } from './FieldWorkerDashboard';
 
+// Wrapper that routes to role-specific dashboards — must be a separate component so hooks in
+// Overview (admin path) don't violate React's Rules of Hooks on early return branches.
 export const Overview: React.FC = () => {
   const { user } = useAuth();
+  if (user?.role === 'citizen') return <CitizenDashboard />;
+  if (user?.role === 'field_worker') return <FieldWorkerDashboard />;
+  return <AdminOverview />;
+};
+
+const AdminOverview: React.FC = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [stats, setStats] = useState<any>({
     open_incidents: 0,
     high_priority_incidents: 0,
@@ -252,6 +264,9 @@ export const Overview: React.FC = () => {
                 <span className="text-[10px] text-teal-700 uppercase font-bold">{selectedIncident.status}</span>
               </div>
               <p className="text-[11px] text-teal-800 line-clamp-2">{selectedIncident.description}</p>
+              <div className="mt-2">
+                <IncidentEvidenceGallery evidence={selectedIncident.evidence} size="sm" />
+              </div>
               <div className="mt-2 flex items-center justify-between">
                 <span className="text-[10px] text-teal-700">Recurrence: {selectedIncident.recurrence_count}x</span>
                 {user?.role === 'admin' && (

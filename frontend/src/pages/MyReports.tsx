@@ -11,12 +11,14 @@ import {
   RefreshCw,
   ExternalLink
 } from 'lucide-react';
-import { api } from '../services/api';
+import { api, mediaUrl } from '../services/api';
 import { Incident } from '../types';
 import { useAuth } from '../context/AuthContext';
+import { useReverifiedIds } from '../hooks/useReverifiedIds';
 
 export const MyReports: React.FC = () => {
   const { user } = useAuth();
+  const reverifiedIds = useReverifiedIds();
   const navigate = useNavigate();
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -115,6 +117,19 @@ export const MyReports: React.FC = () => {
                 <div>
                   <h3 className="font-semibold text-sm text-[#1F2937]">{inc.title}</h3>
                   <p className="text-xs text-[#4B5563] mt-1">{inc.description}</p>
+                  {inc.evidence?.some((ev) => ev.file_type.startsWith('image')) && (
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      {inc.evidence.filter((ev) => ev.file_type.startsWith('image')).map((ev) => (
+                        <a key={ev.id} href={mediaUrl(ev.file_path)} target="_blank" rel="noreferrer">
+                          <img
+                            src={mediaUrl(ev.file_path)}
+                            alt="Issue photo"
+                            className="w-16 h-16 object-cover rounded-md border border-[#E5E7EB]"
+                          />
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-xs text-[#6C757D] border-t border-[#F1F3F5]">
@@ -123,7 +138,7 @@ export const MyReports: React.FC = () => {
                     <span>{inc.location.sector} • {inc.location.landmark || 'GPS Pin'}</span>
                   </div>
 
-                  {inc.status === 'awaiting_verification' && (
+                  {inc.status === 'awaiting_verification' && !reverifiedIds.includes(inc.id) && (
                     <button
                       onClick={() => navigate('/resolution')}
                       className="px-3 py-1 bg-[#D97706] hover:bg-[#B45309] text-white font-medium rounded text-xs shadow-2xs flex items-center gap-1"

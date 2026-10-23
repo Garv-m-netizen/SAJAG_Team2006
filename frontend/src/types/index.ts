@@ -121,6 +121,7 @@ export interface WorkAssignment {
   incident_id: number;
   worker_id: number;
   assigned_by: number;
+  worker_name?: string;
   priority: string;
   estimated_hours: number;
   status: string;
@@ -128,6 +129,25 @@ export interface WorkAssignment {
   assigned_at: string;
   completed_at?: string;
   incident?: Incident;
+}
+
+export interface CitizenFeedback {
+  id: number;
+  incident_id: number;
+  user_id: number;
+  user_name?: string;
+  feedback_type: 'confirmed_resolved' | 'problem_still_exists' | 'unable_to_verify';
+  comments?: string;
+  submitted_at: string;
+}
+
+export interface ReportExtraction {
+  category: string;
+  sector?: string | null;
+  landmark?: string | null;
+  urgency: string;
+  language: string;
+  provider: string;
 }
 
 export interface ResolutionSubmission {

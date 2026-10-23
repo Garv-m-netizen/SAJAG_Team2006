@@ -14,11 +14,15 @@ import {
   SlidersHorizontal
 } from 'lucide-react';
 import { api } from '../services/api';
-import { Incident } from '../types';
+import { IncidentEvidenceGallery } from '../components/IncidentEvidenceGallery';
+import { Incident, WorkAssignment } from '../types';
+import { ResolutionProof } from '../components/ResolutionProof';
+import { CitizenFeedbackList } from '../components/CitizenFeedbackList';
 
 export const AdminSettings: React.FC = () => {
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [assignments, setAssignments] = useState<WorkAssignment[]>([]);
   const [selectedIncident, setSelectedIncident] = useState<Incident | null>(null);
   const [overrideScore, setOverrideScore] = useState<number>(85.0);
   const [overrideReason, setOverrideReason] = useState<string>('');
@@ -37,12 +41,14 @@ export const AdminSettings: React.FC = () => {
 
   const fetchData = async () => {
     try {
-      const [incList, logs] = await Promise.all([
+      const [incList, logs, assigns] = await Promise.all([
         api.getIncidents({ limit: 50 }),
-        api.getAuditLogs(30)
+        api.getAuditLogs(30),
+        api.getAssignments()
       ]);
       setIncidents(incList);
       setAuditLogs(logs);
+      setAssignments(assigns);
       if (incList.length > 0 && !selectedIncident) {
         setSelectedIncident(incList[0]);
       }
@@ -98,6 +104,15 @@ export const AdminSettings: React.FC = () => {
       setIsAssigning(false);
     }
   };
+
+  const currentAssignment = selectedIncident
+    ? assignments.find((a) => a.incident_id === selectedIncident.id)
+    : undefined;
+  // A reopened incident whose previous order is closed can be dispatched again
+  const canDispatch =
+    !!selectedIncident &&
+    !['resolved', 'rejected'].includes(selectedIncident.status) &&
+    (!currentAssignment || (currentAssignment.status === 'completed' && selectedIncident.status === 'reopened'));
 
   const handleResetSeed = async () => {
     if (!confirm("Reset database to clean Chandigarh demonstration baseline? All synthetic records will be re-seeded.")) return;
@@ -206,6 +221,13 @@ export const AdminSettings: React.FC = () => {
                 </div>
               </div>
 
+              {/* Complaint details and citizen evidence */}
+              <div className="p-3.5 rounded bg-gray-50 border border-gray-200 space-y-2">
+                <span className="text-[11px] font-bold text-gray-700 block">Citizen Description:</span>
+                <p className="text-xs text-gray-800 italic">"{selectedIncident.description}"</p>
+                <IncidentEvidenceGallery evidence={selectedIncident.evidence} />
+              </div>
+
               {/* ACTION A: Priority Override with Recorded Reason */}
               <form onSubmit={handlePriorityOverride} className="p-3.5 rounded bg-gray-50 border border-gray-200 space-y-2.5">
                 <span className="font-semibold text-gray-800 block text-xs flex items-center gap-1.5">
@@ -259,7 +281,62 @@ export const AdminSettings: React.FC = () => {
                 )}
               </form>
 
-              {/* ACTION B: Field Worker Assignment */}
+              {/* Worker proof of resolution, shown exactly as the worker filed it */}
+              {['resolution_submitted', 'awaiting_verification', 'resolved', 'reopened'].includes(selectedIncident.status) && (
+                <div className="p-3.5 rounded bg-white border border-teal-200 space-y-2">
+                  <span className="font-semibold text-teal-950 block text-xs">Field Worker Proof of Resolution</span>
+                  <ResolutionProof incidentId={selectedIncident.id} />
+                </div>
+              )}
+
+              {/* ACTION B: Field Worker Assignment (not offered once the issue is closed out) */}
+              {currentAssignment && (
+                <div className="p-3.5 rounded bg-blue-50/50 border border-blue-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-blue-950 text-xs flex items-center gap-1.5">
+                      <HardHat className="w-3.5 h-3.5 text-blue-700" />
+                      Work Order #{currentAssignment.id} — Assigned to {currentAssignment.worker_name || `Worker #${currentAssignment.worker_id}`}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                      currentAssignment.status === 'completed'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : currentAssignment.status === 'in_progress'
+                        ? 'bg-blue-100 text-blue-800'
+                        : 'bg-amber-100 text-amber-800'
+                    }`}>
+                      {currentAssignment.status === 'completed' ? 'Proof submitted' : currentAssignment.status.replace('_', ' ')}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-gray-700">
+                    <div><span className="text-gray-500 block">Urgency</span><strong className="capitalize">{currentAssignment.priority}</strong></div>
+                    <div><span className="text-gray-500 block">Est. hours</span><strong>{currentAssignment.estimated_hours}h</strong></div>
+                    <div><span className="text-gray-500 block">Assigned</span><strong>{new Date(currentAssignment.assigned_at).toLocaleString()}</strong></div>
+                    <div>
+                      <span className="text-gray-500 block">Completed</span>
+                      <strong>{currentAssignment.completed_at ? new Date(currentAssignment.completed_at).toLocaleString() : '—'}</strong>
+                    </div>
+                  </div>
+                  {currentAssignment.notes && (
+                    <p className="text-[11px] text-gray-600 italic">Instructions: "{currentAssignment.notes}"</p>
+                  )}
+                </div>
+              )}
+
+              {/* Citizen reverification verdicts, as seen by the field worker */}
+              {currentAssignment && ['awaiting_verification', 'resolved', 'reopened'].includes(selectedIncident.status) && (
+                <div className="p-3.5 rounded bg-white border border-gray-200">
+                  <CitizenFeedbackList incidentId={selectedIncident.id} />
+                </div>
+              )}
+
+              {!canDispatch ? (
+                !currentAssignment && (
+                  <div className="p-3 rounded bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                    This incident is {selectedIncident.status}; no further worker dispatch is needed.
+                  </div>
+                )
+              ) : (
               <form onSubmit={handleAssignWorker} className="p-3.5 rounded bg-teal-50/40 border border-teal-200 space-y-2.5">
                 <span className="font-semibold text-teal-950 block text-xs flex items-center gap-1.5">
                   <HardHat className="w-3.5 h-3.5 text-teal-700" />
@@ -324,6 +401,7 @@ export const AdminSettings: React.FC = () => {
                   {isAssigning ? 'Dispatching Work Order...' : 'Assign & Notify Worker'}
                 </button>
               </form>
+              )}
             </div>
           ) : (
             <div className="p-8 text-center bg-white rounded-lg border border-[#E5E7EB] text-xs text-gray-500">

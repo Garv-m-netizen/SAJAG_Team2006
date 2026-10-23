@@ -16,8 +16,18 @@ import {
 import { api } from '../services/api';
 import { WorkAssignment, Incident } from '../types';
 import { useAuth } from '../context/AuthContext';
+import { CitizenReverification } from './CitizenReverification';
+import { FieldWorkerDashboard } from './FieldWorkerDashboard';
+import { ResolutionProof } from '../components/ResolutionProof';
 
 export const ResolutionCenter: React.FC = () => {
+  const { user } = useAuth();
+  if (user?.role === 'citizen') return <CitizenReverification />;
+  if (user?.role === 'field_worker') return <FieldWorkerDashboard />;
+  return <AdminResolutionCenter />;
+};
+
+const AdminResolutionCenter: React.FC = () => {
   const { user } = useAuth();
   const [assignments, setAssignments] = useState<WorkAssignment[]>([]);
   const [pendingVerificationIncidents, setPendingVerificationIncidents] = useState<Incident[]>([]);
@@ -156,7 +166,12 @@ export const ResolutionCenter: React.FC = () => {
           </div>
 
           {/* Evidence Submission Form */}
-          {selectedAssignment && (
+          {selectedAssignment && selectedAssignment.status === 'completed' && (
+            <p className="pt-3 border-t border-[#F1F3F5] text-xs text-emerald-800">
+              Proof for Order #{selectedAssignment.id} has already been submitted.
+            </p>
+          )}
+          {selectedAssignment && selectedAssignment.status !== 'completed' && (
             <form onSubmit={handleWorkerSubmit} className="pt-3 border-t border-[#F1F3F5] space-y-3 text-xs">
               <span className="font-semibold text-gray-800 block">
                 Submit Resolution Proof for Order #{selectedAssignment.id}:
@@ -272,6 +287,12 @@ export const ResolutionCenter: React.FC = () => {
               ))
             )}
           </div>
+
+          {selectedIncidentForFeedback && (
+            <div className="pt-3 border-t border-[#F1F3F5]">
+              <ResolutionProof incidentId={selectedIncidentForFeedback.id} />
+            </div>
+          )}
 
           {/* Citizen Feedback Action */}
           {selectedIncidentForFeedback && (

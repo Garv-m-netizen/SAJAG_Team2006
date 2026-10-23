@@ -13,10 +13,11 @@ from app.models import (
 )
 from app.schemas import (
     IncidentCreate, IncidentOut, IncidentPriorityOverride,
-    IncidentStatusUpdate, EvidenceOut
+    IncidentStatusUpdate, EvidenceOut, ReportExtractRequest, ReportExtractOut
 )
 from app.auth import get_current_user, require_role
 from app.services.nlp_extractor import nlp_extractor
+from app.services.llm_extractor import llm_extractor
 from app.services.priority_calculator import priority_calculator
 from app.services.graph_service import graph_service
 from app.services.memory_service import memory_service
@@ -24,6 +25,17 @@ from app.services.rewards_service import rewards_service
 from app.config import settings
 
 router = APIRouter(prefix="/incidents", tags=["Incidents"])
+
+@router.post("/extract", response_model=ReportExtractOut)
+def extract_report_fields(
+    body: ReportExtractRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Pulls category / sector / landmark out of free text via the Gemini -> Groq -> OpenRouter chain."""
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+    return llm_extractor.extract(text[:4000])
 
 @router.post("/report", response_model=IncidentOut)
 def submit_incident_report(

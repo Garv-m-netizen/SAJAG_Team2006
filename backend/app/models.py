@@ -195,6 +195,10 @@ class WorkAssignment(Base):
     worker = relationship("User", back_populates="assignments", foreign_keys=[worker_id])
     resolution_submissions = relationship("ResolutionSubmission", back_populates="assignment")
 
+    @property
+    def worker_name(self):
+        return self.worker.full_name if self.worker else None
+
 class ResolutionSubmission(Base):
     __tablename__ = "resolution_submissions"
 
